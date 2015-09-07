@@ -1,0 +1,208 @@
+#!/usr/bin/ruby
+
+# Usage: who-can path/to/account-authorization-details.json ACTION RESOURCE
+# Where ACTION is e.g. "s3:DeleteObject" or "iam:CreateUser", ...
+# and RESOURCE is e.g. arn:aws:s3:::my-bucket/file.txt (etc)
+
+# Shows a list of IAM users and roles who have permission to perform the
+# given action on the given resource.
+
+# (Approximately.  Not guaranteed to be accurate; patches welcome!)
+# In particular: does not take into consideration any policy on the resource
+# itself, e.g. S3 bucket policy.
+
+require 'json'
+
+iam_data_file, @action, @resource = ARGV
+
+data = JSON.parse(IO.read iam_data_file)
+
+# We seek to emulate the AWS policy engine, where:
+# - the Principal is each user & role in the above data
+# - the Action and Resource are as specified in on the command line
+
+def arg_matches_value(arg, value)
+  return true if value == "*"
+  re = Regexp.new("^" + Regexp.quote(value).gsub("\\*", ".*") + "$")
+  re.match(arg)
+end
+
+def statement_matches(s)
+  # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html
+  # No action on: Version, Id, Statement, Sid, Effect, Principal, NotPrincipal.
+  
+  # Action, NotAction
+  # Resource, NotResource
+  [
+    [ "Action", false, @action ],
+    [ "NotAction", true, @action ],
+    [ "Resource", false, @resource ],
+    [ "NotResource", true, @resource ],
+  ].each do |key, negate, arg|
+    if s[key]
+
+      v = if s[key].kind_of? Array
+            s[key]
+          else
+            [ s[key] ]
+          end
+
+      if !negate
+        return false unless v.any? {|value| arg_matches_value(arg, value)}
+      else
+        return false if v.any? {|value| arg_matches_value(arg, value)}
+      end
+
+    end
+  end
+
+  # Condition: not supported
+
+  true
+end
+
+def run_document(doc)
+  allowed, denied = false, false
+
+  statements = if doc["Statement"].kind_of? Array
+                 doc["Statement"]
+               else
+                 [ doc["Statement"] ]
+               end
+
+  statements.each do |s|
+    if statement_matches(s)
+      denied = true if s["Effect"] == "Deny"
+      allowed = true if s["Effect"] == "Allow"
+    end
+  end
+
+  if denied
+    false
+  elsif allowed
+    true
+  else
+    nil
+  end
+end
+
+def reduce_answers(a)
+  if a.any? {|ans| ans==false}
+    false
+  elsif a.any? {|ans| ans==true}
+    true
+  else
+    nil
+  end
+end
+
+# Managed policies
+
+#puts "Policies"
+policies_map = data["Policies"].each_with_object({}) do |p, h|
+  #puts p["PolicyName"]
+
+  v = p["DefaultVersionId"]
+  current = p["PolicyVersionList"].find {|pv| pv["VersionId"] == v}
+  if !current
+    raise "No version of #{p["PolicyName"]} is current"
+  end
+
+  ans = run_document(current["Document"])
+  
+  h[ p["Arn"] ] = ans
+end
+# p policies_map
+
+# Groups
+
+# p "Groups"
+groups_map = data["GroupDetailList"].each_with_object({}) do |g, h|
+  #puts g["GroupName"]
+
+  inline_answers = g["GroupPolicyList"].map do |pair|
+    ans = run_document(pair["PolicyDocument"])
+    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
+    ans
+  end
+
+  attached_answers = g["AttachedManagedPolicies"].map do |att|
+    if !policies_map.has_key? att["PolicyArn"]
+      raise "Can't find policy #{att["PolicyArn"]}"
+    end
+    policies_map[ att["PolicyArn"] ]
+  end
+
+  answers = inline_answers + attached_answers
+
+  h[ g["GroupName"] ] = reduce_answers(answers)
+end
+# p groups_map
+
+# Users
+#puts "Users"
+users_map = data["UserDetailList"].each_with_object({}) do |u, h|
+  #puts u["UserName"]
+
+  inline_answers = u["UserPolicyList"].map do |pair|
+    ans = run_document(pair["PolicyDocument"])
+    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
+    ans
+  end
+
+  attached_answers = u["AttachedManagedPolicies"].map do |att|
+    if !policies_map.has_key? att["PolicyArn"]
+      raise "Can't find policy #{att["PolicyArn"]}"
+    end
+    policies_map[ att["PolicyArn"] ]
+  end
+
+  group_answers = u["GroupList"].map do |gn|
+    if !groups_map.has_key? gn
+      raise "Can't find group #{gn}"
+    end
+    groups_map[gn]
+  end
+
+  answers = inline_answers + attached_answers + group_answers
+
+  h[ u["UserName"] ] = reduce_answers(answers)
+end
+# p users_map
+
+# Roles
+#puts "Roles"
+roles_map = data["RoleDetailList"].each_with_object({}) do |r, h|
+  #puts r["RoleName"]
+
+  inline_answers = r["RolePolicyList"].map do |pair|
+    ans = run_document(pair["PolicyDocument"])
+    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
+    ans
+  end
+
+  attached_answers = r["AttachedManagedPolicies"].map do |att|
+    if !policies_map.has_key? att["PolicyArn"]
+      raise "Can't find policy #{att["PolicyArn"]}"
+    end
+    policies_map[ att["PolicyArn"] ]
+  end
+
+  answers = inline_answers + attached_answers
+
+  h[ r["RoleName"] ] = reduce_answers(answers)
+end
+# p roles_map
+
+#puts ""
+
+#puts "Who can #{@action} #{@resource} ?"
+#puts ""
+
+user_names = users_map.entries.select {|n,v| v==true}.map(&:first)
+role_names = roles_map.entries.select {|n,v| v==true}.map(&:first)
+
+puts JSON.pretty_generate({
+  Users: user_names,
+  Roles: role_names,
+})
