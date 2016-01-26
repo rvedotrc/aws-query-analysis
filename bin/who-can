@@ -1,4 +1,4 @@
-#!/usr/bin/ruby
+#!/usr/bin/env ruby
 
 # Usage: who-can path/to/account-authorization-details.json ACTION RESOURCE
 # Where ACTION is e.g. "s3:DeleteObject" or "iam:CreateUser", ...
