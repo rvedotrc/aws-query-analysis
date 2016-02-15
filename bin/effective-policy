@@ -1,0 +1,83 @@
+#!/usr/bin/env ruby
+
+# Usage: effective-policy path/to/account-authorization-details.json [type] user-or-group-or-role
+
+require 'json'
+
+iam_data_file = ARGV.shift
+
+data = JSON.parse(IO.read iam_data_file)
+
+require_relative "../lib/aws_policy_simulator"
+
+def policy_documents_for_thing(data, thing, thing_type)
+  # Inline
+  documents = thing["#{thing_type}PolicyList"].map {|p| p["PolicyDocument"] }
+
+  # Managed
+  thing["AttachedManagedPolicies"].each do |att|
+    policy = data["Policies"].find {|p| p["Arn"] == att["PolicyArn"]}
+    policy or raise "Couldn't find policy #{att.inspect}"
+    documents << policy["PolicyVersionList"].find {|pv| pv["IsDefaultVersion"]}["Document"]
+  end
+
+  # Group memberships (should only apply to users)
+  if thing["GroupList"]
+    thing["GroupList"].each do |group_name|
+      group = data["GroupDetailList"].find {|g| g["GroupName"] == group_name}
+      group or raise "Couldn't find group #{group_name.inspect}"
+      documents.concat policy_documents_for_thing(data, group, "Group")
+    end
+  end
+
+  documents
+end
+
+def show_docs(docs)
+  docs.each do |doc|
+    s = doc["Statement"]
+    s = [ s ] unless s.kind_of? Array
+    s.each do |st|
+      puts JSON.generate(st)
+    end
+  end
+end
+
+if ARGV.count == 2
+  thing_type = ARGV.first.upcase[0] + ARGV.first.downcase[1..-1]
+  thing = data["#{thing_type}DetailList"].find do |t|
+    t["Arn"] == ARGV.last or t["#{thing_type}Name"] == ARGV.last
+  end
+
+  if thing
+    docs = policy_documents_for_thing(data, thing, thing_type)
+    show_docs(docs)
+  else
+    $stderr.puts "Couldn't find #{thing_type} #{ARGV.last.inspect}"
+  end
+elsif ARGV.count == 1 and ARGV.last.start_with? "arn:"
+  all = data["UserDetailList"] + data["RoleDetailList"] + data["GroupDetailList"]
+  thing = all.find {|t| t["Arn"] == ARGV.last}
+
+  if thing
+    docs = policy_documents_for_thing(data, thing, thing_type)
+    show_docs(docs)
+  else
+    $stderr.puts "Couldn't find #{ARGV.last.inspect}"
+  end
+elsif ARGV.count == 1
+  all = data["UserDetailList"] + data["RoleDetailList"] + data["GroupDetailList"]
+
+  %w[ User Group Role ].each do |thing_type|
+    thing = data["#{thing_type}DetailList"].find {|t| t["#{thing_type}Name"] == ARGV.last}
+    if thing
+      puts "# #{thing_type}"
+      docs = policy_documents_for_thing(data, thing, thing_type)
+      show_docs(docs)
+    else
+      puts "# No matching #{thing_type}"
+    end
+  end
+else
+  raise "Huh? #{ARGV.inspect}"
+end

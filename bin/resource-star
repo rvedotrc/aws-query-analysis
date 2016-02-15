@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+# Usage: resource-star path/to/account-authorization-details.json
+
+require 'json'
+
+iam_data_file = ARGV.shift
+
+data = JSON.parse(IO.read iam_data_file)
+
+def all_policy_documents(data)
+  %w[ User Group Role ].each do |thing_type|
+    data["#{thing_type}DetailList"].each do |thing|
+      name = thing["#{thing_type}Name"]
+
+      # Inline
+      thing["#{thing_type}PolicyList"].each do |p|
+        yield p["PolicyDocument"], type: thing_type.downcase.to_sym, name: name, policy_name: p["PolicyName"]
+      end
+
+    end
+  end
+
+  # Managed
+  data["Policies"].each do |policy|
+    doc = policy["PolicyVersionList"].find {|pv| pv["IsDefaultVersion"]}["Document"]
+    doc or raise
+    yield doc, type: :policy, name: policy["PolicyName"], policy: policy
+  end
+end
+
+all_policy_documents(data) do |document, context|
+  s = document["Statement"]
+  s = [s] unless s.kind_of? Array
+
+  s.each do |st|
+    st["Effect"] == "Allow" or next
+    actions = st["Action"] or next
+    actions = [actions] unless actions.kind_of? Array
+
+    res = st["Resource"]
+    if res
+      res = [res] unless res.kind_of? Array
+      if res.include? "*"
+        puts JSON.generate({st: st, actions: actions, ctx: context})
+      end
+    end
+  end
+end
