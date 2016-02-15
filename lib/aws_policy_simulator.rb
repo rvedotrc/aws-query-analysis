@@ -66,7 +66,9 @@ module AwsPolicySimulator
     end
 
     def test(context)
-      documents.map {|d| d.test(context)}.reduce(DENIED, &:+)
+      ans = documents.map {|d| d.test(context)}.reduce(NEITHER, &:+)
+      ans = DENIED if ans == NEITHER
+      ans
     end
 
   end
