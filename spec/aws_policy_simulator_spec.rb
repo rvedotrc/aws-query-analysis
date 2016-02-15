@@ -1,244 +1,181 @@
 require_relative "../lib/aws_policy_simulator"
 
-describe AwsPolicySimulator do
+describe "match on Principal" do
 
-  describe AwsPolicySimulator::PartialResult do
-
-    it "should provide ALLOWED" do
-      v = AwsPolicySimulator::ALLOWED
-      expect(v.allowed?).to be_truthy
-      expect(v.denied?).to be_falsy
-      expect(v.to_s).to match(/ALLOWED/)
-      expect(v.inspect).to match(/ALLOWED/)
-    end
-
-    it "should provide DENIED" do
-      v = AwsPolicySimulator::DENIED
-      expect(v.allowed?).to be_falsy
-      expect(v.denied?).to be_truthy
-      expect(v.to_s).to match(/DENIED/)
-      expect(v.inspect).to match(/DENIED/)
-    end
-
-    it "should provide NEITHER" do
-      v = AwsPolicySimulator::NEITHER
-      expect(v.allowed?).to be_falsy
-      expect(v.denied?).to be_falsy
-      expect(v.to_s).to match(/NEITHER/)
-      expect(v.inspect).to match(/NEITHER/)
-    end
-
-    it "should add partial results" do
-      y = AwsPolicySimulator::ALLOWED
-      n = AwsPolicySimulator::DENIED
-      p = AwsPolicySimulator::NEITHER
-
-      expect(y).to eq(y)
-      expect(y).not_to eq(n)
-      expect(y).not_to eq(p)
-
-      expect(n).not_to eq(y)
-      expect(n).to eq(n)
-      expect(n).not_to eq(p)
-
-      expect(p).not_to eq(y)
-      expect(p).not_to eq(n)
-      expect(p).to eq(p)
-
-      expect(y + y).to eq(y)
-      expect(y + n).to eq(n)
-      expect(y + p).to eq(y)
-
-      expect(n + y).to eq(n)
-      expect(n + n).to eq(n)
-      expect(n + p).to eq(n)
-
-      expect(p + y).to eq(y)
-      expect(p + n).to eq(n)
-      expect(p + p).to eq(p)
-    end
-
+  def context_for_principal(principal)
+    AwsPolicySimulator::RequestContext.new(
+      principal,
+      "foo:GetBar",
+      "arn:aws:foo:eu-west-1:123456789012:SomeFoo",
+    )
   end
 
-  describe AwsPolicySimulator::PolicyDocumentSet do
-    # TODO like PolicyDocument, but defaults to DENIED if nothing matches
+  def a_root_user
+    { "AWS" => "arn:aws:iam::123456789012:root" }
   end
 
-  describe AwsPolicySimulator::PolicyDocument do
+  def an_iam_user
+    { "AWS" => "arn:aws:iam::123456789012:user/someone" }
+  end
 
-    def allow_all
-      { "Resource" => "*", "Action" => "*", "Effect" => "Allow" }
-    end
+  def an_iam_role
+    { "AWS" => "arn:aws:iam::123456789012:role/something" }
+  end
 
-    def deny_all
-      { "Resource" => "*", "Action" => "*", "Effect" => "Deny" }
-    end
+  def a_service(s = "ec2")
+    { "Service" => "#{s}.amazonaws.com" }
+  end
 
-    def deny_none
-      { "NotResource" => "*", "Action" => "*", "Effect" => "Deny" }
-    end
+  def some_services(list)
+    { "Service" => list.map {|s| "#{s}.amazonaws.com"} }
+  end
 
-    def some_context
-      AwsPolicySimulator::RequestContext.new(
-        {"AWS" => "arn:aws:iam::123456789012:root"},
-        "foo:GetBar",
-        "arn:aws:foo:eu-west-1:123456789012:SomeFoo",
-      )
-    end
+  def expect_match(context_principal, statement_principal)
+    expect_result(context_principal, statement_principal, AwsPolicySimulator::ALLOWED)
+  end
 
-    it "should default to neither" do
-      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => []})
-      ctx = some_context
-      ans = doc.test(ctx)
-      expect(ans).to eq(AwsPolicySimulator::NEITHER)
-    end
+  def expect_no_match(context_principal, statement_principal)
+    expect_result(context_principal, statement_principal, AwsPolicySimulator::NEITHER)
+  end
 
-    it "should apply Deny" do
-      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [allow_all,deny_all,allow_all]})
-      ctx = some_context
-      ans = doc.test(ctx)
-      expect(ans).to eq(AwsPolicySimulator::DENIED)
-    end
+  def expect_result(context_principal, statement_principal, result)
+    s = { "Effect" => "Allow", "Resource" => "*" }
+    s["Principal"] = statement_principal unless statement_principal.nil?
+    doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [s]})
 
-    it "should apply Allow" do
-      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [deny_none,allow_all,deny_none]})
-      ctx = some_context
-      ans = doc.test(ctx)
-      expect(ans).to eq(AwsPolicySimulator::ALLOWED)
-    end
+    ctx = context_for_principal(context_principal)
 
-    it "should handle a bare statement" do
-      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => allow_all})
-      ctx = some_context
-      ans = doc.test(ctx)
-      expect(ans).to eq(AwsPolicySimulator::ALLOWED)
-    end
+    ans = doc.test(ctx)
+    expect(ans).to eq(result)
+  end
 
-    describe "Principal" do
+  it "defaults to matching" do
+    expect_match(a_root_user, nil)
+    expect_match(an_iam_user, nil)
+    expect_match(an_iam_role, nil)
+    expect_match(a_service, nil)
+  end
 
-      def context_for_principal(principal)
-        AwsPolicySimulator::RequestContext.new(
-          principal,
-          "foo:GetBar",
-          "arn:aws:foo:eu-west-1:123456789012:SomeFoo",
-        )
-      end
+  it "matches AWS *" do
+    t = { "AWS" => "*" }
+    expect_match(a_root_user, t)
+    expect_match(an_iam_user, t)
+    expect_match(an_iam_role, t)
+    expect_no_match(a_service, t) # Is this right?
+  end
 
-      def a_root_user
-        { "AWS" => "arn:aws:iam::123456789012:root" }
-      end
+  it "matches AWS (single)" do
+    # TODO, Supports wildcards?
+    t = an_iam_user
+    expect_no_match(a_root_user, t)
+    expect_match(an_iam_user, t)
+    expect_no_match(an_iam_role, t)
+    expect_no_match(a_service, t)
+  end
 
-      def an_iam_user
-        { "AWS" => "arn:aws:iam::123456789012:user/someone" }
-      end
+  it "matches AWS (list)" do
+    # TODO, Supports wildcards?
+    t = { "AWS" => [ an_iam_user["AWS"], an_iam_role["AWS"] ] }
+    expect_no_match(a_root_user, t)
+    expect_match(an_iam_user, t)
+    expect_match(an_iam_role, t)
+    expect_no_match(a_service, t)
+  end
 
-      def an_iam_role
-        { "AWS" => "arn:aws:iam::123456789012:role/something" }
-      end
+  it "matches a service" do
+    t = a_service
+    expect_no_match(a_root_user, t)
+    expect_no_match(an_iam_user, t)
+    expect_no_match(an_iam_role, t)
+    expect_match(a_service, t)
+  end
 
-      def a_service(s = "ec2")
-        { "Service" => "#{s}.amazonaws.com" }
-      end
+  it "matches a list of services" do
+    t = some_services(%w[ ec2 sns sqs ])
+    expect_no_match(a_root_user, t)
+    expect_no_match(an_iam_user, t)
+    expect_no_match(an_iam_role, t)
+    expect_match(a_service("sqs"), t)
+    expect_no_match(a_service("rds"), t)
+  end
 
-      def some_services(list)
-        { "Service" => list.map {|s| "#{s}.amazonaws.com"} }
-      end
+end
 
-      def expect_match(context_principal, statement_principal)
-        expect_result(context_principal, statement_principal, AwsPolicySimulator::ALLOWED)
-      end
+describe "match on Resource / NotResource" do
 
-      def expect_no_match(context_principal, statement_principal)
-        expect_result(context_principal, statement_principal, AwsPolicySimulator::NEITHER)
-      end
+  def expect_match(context_resource, statement_resource, statement_notresource = nil)
+    expect_result(context_resource, statement_resource, statement_notresource, AwsPolicySimulator::ALLOWED)
+  end
 
-      def expect_result(context_principal, statement_principal, result)
-        s = { "Effect" => "Allow", "Resource" => "*" }
-        s["Principal"] = statement_principal unless statement_principal.nil?
-        doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [s]})
+  def expect_no_match(context_resource, statement_resource, statement_notresource = nil)
+    expect_result(context_resource, statement_resource, statement_notresource, AwsPolicySimulator::NEITHER)
+  end
 
-        ctx = context_for_principal(context_principal)
+  def expect_result(context_resource, statement_resource, statement_notresource, result)
+    ctx = AwsPolicySimulator::RequestContext.new(
+      "arn:aws:sqs:eu-west-1:123456789012:root",
+      "foo:GetBar",
+      context_resource,
+    )
 
-        ans = doc.test(ctx)
-        expect(ans).to eq(result)
-      end
+    s = { "Effect" => "Allow" }
+    s["Resource"] = statement_resource if statement_resource
+    s["NotResource"] = statement_notresource if statement_notresource
+    doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => s})
 
-      it "defaults to matching" do
-        expect_match(a_root_user, nil)
-        expect_match(an_iam_user, nil)
-        expect_match(an_iam_role, nil)
-        expect_match(a_service, nil)
-      end
+    expect(doc.test(ctx)).to eq(result)
+  end
 
-      it "matches AWS *" do
-        t = { "AWS" => "*" }
-        expect_match(a_root_user, t)
-        expect_match(an_iam_user, t)
-        expect_match(an_iam_role, t)
-        expect_no_match(a_service, t) # Is this right?
-      end
+  it "matches on Resource" do
+    an_arn = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue"
+    expect_match(an_arn, an_arn)
+    expect_no_match(an_arn, an_arn+"x")
+  end
 
-      it "matches AWS (single)" do
-        # TODO, Supports wildcards?
-        t = an_iam_user
-        expect_no_match(a_root_user, t)
-        expect_match(an_iam_user, t)
-        expect_no_match(an_iam_role, t)
-        expect_no_match(a_service, t)
-      end
+  it "matches on Resource (wildcard)" do
+    an_arn = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue"
+    expect_match(an_arn, "*")
+    expect_match(an_arn, "arn:*") # valid?
+    expect_match(an_arn, "arn:aws:sqs:eu-west-1:123456789012:*")
+    expect_match(an_arn, "arn:aws:sqs:eu-west-?:123456789012:*")
+  end
 
-      it "matches AWS (list)" do
-        # TODO, Supports wildcards?
-        t = { "AWS" => [ an_iam_user["AWS"], an_iam_role["AWS"] ] }
-        expect_no_match(a_root_user, t)
-        expect_match(an_iam_user, t)
-        expect_match(an_iam_role, t)
-        expect_no_match(a_service, t)
-      end
+  it "matches on Resource (list)" do
+    an_arn = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue"
+    expect_match(an_arn, ["*", "foo"])
+    expect_match(an_arn, ["foo", an_arn])
+    expect_no_match(an_arn, ["foo", "bar"])
+  end
 
-      it "matches a service" do
-        t = a_service
-        expect_no_match(a_root_user, t)
-        expect_no_match(an_iam_user, t)
-        expect_no_match(an_iam_role, t)
-        expect_match(a_service, t)
-      end
+  it "matches on NotResource" do
+    an_arn = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue"
+    expect_no_match(an_arn, nil, an_arn)
+    expect_no_match(an_arn, nil, "*")
+    expect_match(an_arn, nil, an_arn+"x")
+  end
 
-      it "matches a list of services" do
-        t = some_services(%w[ ec2 sns sqs ])
-        expect_no_match(a_root_user, t)
-        expect_no_match(an_iam_user, t)
-        expect_no_match(an_iam_role, t)
-        expect_match(a_service("sqs"), t)
-        expect_no_match(a_service("rds"), t)
-      end
+  it "matches on NotResource (list)" do
+    an_arn_1 = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue1"
+    an_arn_2 = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue2"
+    an_arn_3 = "arn:aws:sqs:eu-west-1:123456789012:SomeQueue3"
+    expect_match(an_arn_1, nil, [an_arn_2, an_arn_3])
+    expect_no_match(an_arn_2, nil, [an_arn_2, an_arn_3])
+  end
 
-    end
+end
 
-    describe "Resource / NotResource" do
+describe "match on Action / NotAction" do
 
-      it "blah" do
-        true
-      end
+  it "blah" do
+    true
+  end
 
-    end
+end
 
-    describe "Action / NotAction" do
+describe "match on Conditions" do
 
-      it "blah" do
-        true
-      end
-
-    end
-
-    describe "Conditions" do
-
-      it "blah" do
-        true
-      end
-
-    end
-
+  it "blah" do
+    true
   end
 
 end

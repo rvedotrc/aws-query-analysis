@@ -167,7 +167,36 @@ module AwsPolicySimulator
       # Always either "*", or an arn-string?
       # Apply Resource (any match) / NotResource (none match)
       return false if @data["NotResource"] == "*"
-      true
+
+      sym = nil
+      if @data["Resource"]
+        v = @data["Resource"]
+        sym = :any?
+      elsif @data["NotResource"]
+        v = @data["NotResource"]
+        sym = :none?
+      end
+
+      v = [ v ] unless v.kind_of? Array
+      v.send(sym) do |r|
+        # does r match the context? (mainly context.resource)
+        wildcard_match(r, context.resource)
+      end
+    end
+
+    def wildcard_match(pattern, thing)
+      regex = pattern.split(/(\*|\?)/, -1).map do |fragment|
+        case fragment
+        when "*"
+          ".*"
+        when "?"
+          "."
+        else
+          Regexp.quote(fragment)
+        end
+      end.join ""
+
+      not thing.match("^#{regex}$").nil?
     end
 
     def conditions_match?(context)
