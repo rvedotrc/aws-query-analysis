@@ -159,28 +159,32 @@ module AwsPolicySimulator
       # String, or array of strings
       # simple *-match, case insensitive?
       # Apply Action (any match) / NotAction (none match)
-      true
+      string_match("Action", "NotAction", context.action, :wildcard_match)
     end
 
     def resource_matches?(context)
       # String, or array of strings
       # Always either "*", or an arn-string?
       # Apply Resource (any match) / NotResource (none match)
-      return false if @data["NotResource"] == "*"
+      string_match("Resource", "NotResource", context.resource, :wildcard_match)
+    end
 
+    def string_match(positive_list, negative_list, context_value, match_method)
       sym = nil
-      if @data["Resource"]
-        v = @data["Resource"]
+      if @data[positive_list]
+        v = @data[positive_list]
         sym = :any?
-      elsif @data["NotResource"]
-        v = @data["NotResource"]
+      elsif @data[negative_list]
+        v = @data[negative_list]
         sym = :none?
+      else
+        raise "Saw neither #{positive_list} nor #{negative_list} in #{self}"
       end
 
       v = [ v ] unless v.kind_of? Array
+
       v.send(sym) do |r|
-        # does r match the context? (mainly context.resource)
-        wildcard_match(r, context.resource)
+        send(match_method, r, context_value)
       end
     end
 

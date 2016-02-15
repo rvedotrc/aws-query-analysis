@@ -17,7 +17,7 @@ describe "match on Resource / NotResource" do
       context_resource,
     )
 
-    s = { "Effect" => "Allow" }
+    s = { "Effect" => "Allow", "Action" => "*" }
     s["Resource"] = statement_resource if statement_resource
     s["NotResource"] = statement_notresource if statement_notresource
     doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => s})

@@ -39,7 +39,7 @@ describe "match on Principal" do
   end
 
   def expect_result(context_principal, statement_principal, result)
-    s = { "Effect" => "Allow", "Resource" => "*" }
+    s = { "Effect" => "Allow", "Resource" => "*", "Action" => "*" }
     s["Principal"] = statement_principal unless statement_principal.nil?
     doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [s]})
 
