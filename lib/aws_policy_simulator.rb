@@ -133,7 +133,26 @@ module AwsPolicySimulator
       # also "Federated" (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html)
       # { "Service": "whatever.amazonaws.com" }
       # or as above, but with arrays of strings (match any)
-      true
+
+      s = @data["Principal"]
+      return true if s.nil?
+
+      if s.kind_of? Hash
+        case s.keys
+        when ["AWS"]
+          v = s["AWS"]
+          v = [v] unless v.kind_of? Array
+          v.include?(context.principal["AWS"]) or (v.include?("*") and context.principal["AWS"])
+        when ["Service"]
+          v = s["Service"]
+          v = [v] unless v.kind_of? Array
+          v.include? context.principal["Service"]
+        else
+          raise "TODO"
+        end
+      else
+        raise "Unexpected Principal: #{self}"
+      end
     end
 
     def action_matches?(context)
