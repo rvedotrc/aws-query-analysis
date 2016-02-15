@@ -21,186 +21,63 @@ data = JSON.parse(IO.read iam_data_file)
 # - the Principal is each user & role in the above data
 # - the Action and Resource are as specified in on the command line
 
-def arg_matches_value(arg, value)
-  return true if value == "*"
-  re = Regexp.new("^" + Regexp.quote(value).gsub("\\*", ".*") + "$")
-  re.match(arg)
+require_relative "../lib/aws_policy_simulator"
+
+def run_documents(documents, principal)
+
+  ctx = AwsPolicySimulator::RequestContext.new(principal, @action, @resource)
+  docs = documents.map {|d| AwsPolicySimulator::PolicyDocument.new(d)}
+  docset = AwsPolicySimulator::PolicyDocumentSet.new(docs)
+  docset.test(ctx)
+
 end
 
-def statement_matches(s)
-  # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html
-  # No action on: Version, Id, Statement, Sid, Effect, Principal, NotPrincipal.
-  
-  # Action, NotAction
-  # Resource, NotResource
-  [
-    [ "Action", false, @action ],
-    [ "NotAction", true, @action ],
-    [ "Resource", false, @resource ],
-    [ "NotResource", true, @resource ],
-  ].each do |key, negate, arg|
-    if s[key]
+def policy_documents_for_thing(data, thing, thing_type)
+  # Inline
+  documents = thing["#{thing_type}PolicyList"].map {|p| p["PolicyDocument"] }
 
-      v = if s[key].kind_of? Array
-            s[key]
-          else
-            [ s[key] ]
-          end
+  # Managed
+  thing["AttachedManagedPolicies"].each do |att|
+    policy = data["Policies"].find {|p| p["Arn"] == att["PolicyArn"]}
+    policy or raise "Couldn't find policy #{att.inspect}"
+    documents << policy["PolicyVersionList"].find {|pv| pv["IsDefaultVersion"]}["Document"]
+  end
 
-      if !negate
-        return false unless v.any? {|value| arg_matches_value(arg, value)}
-      else
-        return false if v.any? {|value| arg_matches_value(arg, value)}
-      end
-
+  # Group memberships (should only apply to users)
+  if thing["GroupList"]
+    thing["GroupList"].each do |group_name|
+      group = data["GroupDetailList"].find {|g| g["GroupName"] == group_name}
+      group or raise "Couldn't find group #{group_name.inspect}"
+      documents.concat policy_documents_for_thing(data, group, "Group")
     end
   end
 
-  # Condition: not supported
-
-  true
+  documents
 end
 
-def run_document(doc)
-  allowed, denied = false, false
+no_humans = true
 
-  statements = if doc["Statement"].kind_of? Array
-                 doc["Statement"]
-               else
-                 [ doc["Statement"] ]
-               end
+user_names = []
+data["UserDetailList"].each do |u|
+  next if no_humans and u["UserName"].start_with? "modav."
 
-  statements.each do |s|
-    if statement_matches(s)
-      denied = true if s["Effect"] == "Deny"
-      allowed = true if s["Effect"] == "Allow"
-    end
-  end
-
-  if denied
-    false
-  elsif allowed
-    true
-  else
-    nil
+  documents = policy_documents_for_thing(data, u, "User")
+  ans = run_documents(documents, { "AWS" => u["Arn"] })
+  if ans.allowed?
+    user_names << u["UserName"]
   end
 end
 
-def reduce_answers(a)
-  if a.any? {|ans| ans==false}
-    false
-  elsif a.any? {|ans| ans==true}
-    true
-  else
-    nil
+role_names = []
+data["RoleDetailList"].each do |r|
+  next if no_humans and r["Path"].start_with? "/x509/"
+
+  documents = policy_documents_for_thing(data, r, "Role")
+  ans = run_documents(documents, { "AWS" => r["Arn"] })
+  if ans.allowed?
+    role_names << r["RoleName"]
   end
 end
-
-# Managed policies
-
-#puts "Policies"
-policies_map = data["Policies"].each_with_object({}) do |p, h|
-  #puts p["PolicyName"]
-
-  v = p["DefaultVersionId"]
-  current = p["PolicyVersionList"].find {|pv| pv["VersionId"] == v}
-  if !current
-    raise "No version of #{p["PolicyName"]} is current"
-  end
-
-  ans = run_document(current["Document"])
-  
-  h[ p["Arn"] ] = ans
-end
-# p policies_map
-
-# Groups
-
-# p "Groups"
-groups_map = data["GroupDetailList"].each_with_object({}) do |g, h|
-  #puts g["GroupName"]
-
-  inline_answers = g["GroupPolicyList"].map do |pair|
-    ans = run_document(pair["PolicyDocument"])
-    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
-    ans
-  end
-
-  attached_answers = g["AttachedManagedPolicies"].map do |att|
-    if !policies_map.has_key? att["PolicyArn"]
-      raise "Can't find policy #{att["PolicyArn"]}"
-    end
-    policies_map[ att["PolicyArn"] ]
-  end
-
-  answers = inline_answers + attached_answers
-
-  h[ g["GroupName"] ] = reduce_answers(answers)
-end
-# p groups_map
-
-# Users
-#puts "Users"
-users_map = data["UserDetailList"].each_with_object({}) do |u, h|
-  #puts u["UserName"]
-
-  inline_answers = u["UserPolicyList"].map do |pair|
-    ans = run_document(pair["PolicyDocument"])
-    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
-    ans
-  end
-
-  attached_answers = u["AttachedManagedPolicies"].map do |att|
-    if !policies_map.has_key? att["PolicyArn"]
-      raise "Can't find policy #{att["PolicyArn"]}"
-    end
-    policies_map[ att["PolicyArn"] ]
-  end
-
-  group_answers = u["GroupList"].map do |gn|
-    if !groups_map.has_key? gn
-      raise "Can't find group #{gn}"
-    end
-    groups_map[gn]
-  end
-
-  answers = inline_answers + attached_answers + group_answers
-
-  h[ u["UserName"] ] = reduce_answers(answers)
-end
-# p users_map
-
-# Roles
-#puts "Roles"
-roles_map = data["RoleDetailList"].each_with_object({}) do |r, h|
-  #puts r["RoleName"]
-
-  inline_answers = r["RolePolicyList"].map do |pair|
-    ans = run_document(pair["PolicyDocument"])
-    #puts "  #{pair["PolicyName"]} -> #{ans.inspect}"
-    ans
-  end
-
-  attached_answers = r["AttachedManagedPolicies"].map do |att|
-    if !policies_map.has_key? att["PolicyArn"]
-      raise "Can't find policy #{att["PolicyArn"]}"
-    end
-    policies_map[ att["PolicyArn"] ]
-  end
-
-  answers = inline_answers + attached_answers
-
-  h[ r["RoleName"] ] = reduce_answers(answers)
-end
-# p roles_map
-
-#puts ""
-
-#puts "Who can #{@action} #{@resource} ?"
-#puts ""
-
-user_names = users_map.entries.select {|n,v| v==true}.map(&:first)
-role_names = roles_map.entries.select {|n,v| v==true}.map(&:first)
 
 puts JSON.pretty_generate({
   Users: user_names,
