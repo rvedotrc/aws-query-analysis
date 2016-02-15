@@ -57,6 +57,20 @@ module AwsPolicySimulator
     other
   end
 
+  class PolicyDocumentSet
+
+    attr_reader :documents
+
+    def initialize(documents)
+      @documents = documents
+    end
+
+    def test(context)
+      documents.map {|d| d.test(context)}.reduce(DENIED, &:+)
+    end
+
+  end
+
   class PolicyDocument
 
     attr_reader :version, :sid, :statements
@@ -65,12 +79,14 @@ module AwsPolicySimulator
       @version = data["Version"]
       @sid = data["Sid"]
       statements = data["Statement"]
-      statements = [ statements ] unless @statements.kind_of? Array
+      statements = [ statements ] unless statements.kind_of? Array
       @statements = statements.map {|s| PolicyStatement.new(s)}
     end
 
+    # Note, we default to NEITHER not DENIED because there may be many policy
+    # documents to consider for a single request.  See PolicyDocumentSet#test.
     def test(context)
-      statements.map {|s| s.test(context)}.reduce(&:+) + PartialResult::NEITHER
+      statements.map {|s| s.test(context)}.reduce(NEITHER, &:+)
     end
 
   end
@@ -85,14 +101,16 @@ module AwsPolicySimulator
 
     def test(context)
       if matches?(context)
-        case data["Effect"]
+        case @data["Effect"]
         when "Allow"
-          PartialResult::ALLOWED
+          ALLOWED
         when "Deny"
-          PartialResult::DENIED
+          DENIED
+        else
+          raise "Unexpected 'Effect': #{self}"
         end
       else
-        PartialResult::NEITHER
+        NEITHER
       end
     end
 
@@ -115,18 +133,22 @@ module AwsPolicySimulator
       # also "Federated" (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html)
       # { "Service": "whatever.amazonaws.com" }
       # or as above, but with arrays of strings (match any)
+      true
     end
 
     def action_matches?(context)
       # String, or array of strings
       # simple *-match, case insensitive?
       # Apply Action (any match) / NotAction (none match)
+      true
     end
 
     def resource_matches?(context)
       # String, or array of strings
       # Always either "*", or an arn-string?
       # Apply Resource (any match) / NotResource (none match)
+      return false if @data["NotResource"] == "*"
+      true
     end
 
     def conditions_match?(context)
@@ -161,6 +183,7 @@ module AwsPolicySimulator
       # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_multi-value-conditions.html
       # ForAllValues:<cond>, ForAnyValue:<cond>
 
+      true
     end
 
   end

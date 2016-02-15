@@ -60,4 +60,130 @@ describe AwsPolicySimulator do
 
   end
 
+  describe AwsPolicySimulator::PolicyDocumentSet do
+    # TODO like PolicyDocument, but defaults to DENIED if nothing matches
+  end
+
+  describe AwsPolicySimulator::PolicyDocument do
+
+    def allow_all
+      { "Resource" => "*", "Action" => "*", "Effect" => "Allow" }
+    end
+
+    def deny_all
+      { "Resource" => "*", "Action" => "*", "Effect" => "Deny" }
+    end
+
+    def deny_none
+      { "NotResource" => "*", "Action" => "*", "Effect" => "Deny" }
+    end
+
+    def some_context
+      AwsPolicySimulator::RequestContext.new(
+        {"AWS" => "arn:aws:iam::123456789012:root"},
+        "foo:GetBar",
+        "arn:aws:foo:eu-west-1:123456789012:SomeFoo",
+      )
+    end
+
+    it "should default to neither" do
+      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => []})
+      ctx = some_context
+      ans = doc.test(ctx)
+      expect(ans).to eq(AwsPolicySimulator::NEITHER)
+    end
+
+    it "should apply Deny" do
+      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [allow_all,deny_all,allow_all]})
+      ctx = some_context
+      ans = doc.test(ctx)
+      expect(ans).to eq(AwsPolicySimulator::DENIED)
+    end
+
+    it "should apply Allow" do
+      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [deny_none,allow_all,deny_none]})
+      ctx = some_context
+      ans = doc.test(ctx)
+      expect(ans).to eq(AwsPolicySimulator::ALLOWED)
+    end
+
+    it "should handle a bare statement" do
+      doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => allow_all})
+      ctx = some_context
+      ans = doc.test(ctx)
+      expect(ans).to eq(AwsPolicySimulator::ALLOWED)
+    end
+
+    describe "Principal" do
+
+      def context_for_principal(principal)
+        AwsPolicySimulator::RequestContext.new(
+          principal,
+          "foo:GetBar",
+          "arn:aws:foo:eu-west-1:123456789012:SomeFoo",
+        )
+      end
+
+      def a_root_user
+        { "AWS" => "arn:aws:iam::123456789012:root" }
+      end
+
+      def an_iam_user
+        { "AWS" => "arn:aws:iam::123456789012:user/someone" }
+      end
+
+      def an_iam_role
+        { "AWS" => "arn:aws:iam::123456789012:role/something" }
+      end
+
+      def a_service
+        { "Service" => "ec2.amazonaws.com" }
+      end
+
+      def expect_match(context_principal, statement_principal)
+        s = { "Effect" => "Allow", "Resource" => "*" }
+        s["Principal"] = statement_principal unless statement_principal.nil?
+        doc = AwsPolicySimulator::PolicyDocument.new({"Version" => "2012-10-17", "Statement" => [s]})
+
+        ctx = context_for_principal(context_principal)
+
+        ans = doc.test(ctx)
+        expect(ans).to eq(AwsPolicySimulator::ALLOWED)
+      end
+
+      it "defaults to matching" do
+        expect_match(a_root_user, nil)
+        expect_match(an_iam_user, nil)
+        expect_match(an_iam_role, nil)
+        expect_match(a_service, nil)
+      end
+
+    end
+
+    describe "Resource / NotResource" do
+
+      it "blah" do
+        true
+      end
+
+    end
+
+    describe "Action / NotAction" do
+
+      it "blah" do
+        true
+      end
+
+    end
+
+    describe "Conditions" do
+
+      it "blah" do
+        true
+      end
+
+    end
+
+  end
+
 end
