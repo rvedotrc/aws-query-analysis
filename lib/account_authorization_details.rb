@@ -10,6 +10,22 @@ module AccountAuthorizationDetails
         data = JSON.parse(IO.read data)
       end
       @data = data
+
+      @users_by_name = data["UserDetailList"].each_with_object({}) do |t, h|
+        h[t["UserName"]] = t
+      end
+
+      @groups_by_name = data["GroupDetailList"].each_with_object({}) do |t, h|
+        h[t["GroupName"]] = t
+      end
+
+      @roles_by_name = data["RoleDetailList"].each_with_object({}) do |t, h|
+        h[t["RoleName"]] = t
+      end
+
+      @policies_by_name = data["Policies"].each_with_object({}) do |t, h|
+        h[t["PolicyName"]] = t
+      end
     end
 
     def users
@@ -17,7 +33,8 @@ module AccountAuthorizationDetails
     end
 
     def user_by_name(n)
-      users.find {|u| u.data["UserName"] == n}
+      t = @users_by_name[n]
+      t ? User.new(self, t) : nil
     end
 
     def groups
@@ -25,7 +42,8 @@ module AccountAuthorizationDetails
     end
 
     def group_by_name(n)
-      groups.find {|g| g.data["GroupName"] == n}
+      t = @groups_by_name[n]
+      t ? Group.new(self, t) : nil
     end
 
     def roles
@@ -33,7 +51,8 @@ module AccountAuthorizationDetails
     end
 
     def role_by_name(n)
-      roles.find {|r| r.data["RoleName"] == n}
+      t = @roles_by_name[n]
+      t ? Role.new(self, t) : nil
     end
 
     def policies
@@ -41,7 +60,8 @@ module AccountAuthorizationDetails
     end
 
     def policy_by_name(n)
-      policies.find {|g| g.data["PolicyName"] == n}
+      t = @policies_by_name[n]
+      t ? ManagedPolicy.new(self, t) : nil
     end
 
   end
