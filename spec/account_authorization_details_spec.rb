@@ -89,6 +89,8 @@ describe AccountAuthorizationDetails do
       expect(user.inline_policies.first).to be_kind_of AccountAuthorizationDetails::InlinePolicy
     end
 
+    # TODO all_policy_documents
+
   end
 
   describe "group" do
@@ -105,6 +107,8 @@ describe AccountAuthorizationDetails do
       expect(group.inline_policies.first).to be_kind_of AccountAuthorizationDetails::InlinePolicy
     end
 
+    # TODO all_policy_documents
+
   end
 
   describe "role" do
@@ -120,6 +124,8 @@ describe AccountAuthorizationDetails do
       expect(role.inline_policies).to be_kind_of Array
       expect(role.inline_policies.first).to be_kind_of AccountAuthorizationDetails::InlinePolicy
     end
+
+    # TODO all_policy_documents
 
   end
 

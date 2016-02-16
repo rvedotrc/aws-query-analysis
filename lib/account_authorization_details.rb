@@ -46,8 +46,28 @@ module AccountAuthorizationDetails
 
   end
 
+  module HasPolicyDocuments
+
+    def all_policy_documents
+      # Inline
+      documents = inline_policies.map(&:policy_document)
+
+      # Managed
+      documents.concat managed_policies.map(&:policy_document)
+
+      # Group memberships (should only apply to users)
+      if respond_to? :groups
+        documents.concat groups.map(&:all_policy_documents).flatten
+      end
+
+      documents
+    end
+
+  end
+
   class User
 
+    include HasPolicyDocuments
     attr_reader :report, :data
 
     def initialize(report, data)
@@ -79,6 +99,7 @@ module AccountAuthorizationDetails
 
   class Group
 
+    include HasPolicyDocuments
     attr_reader :report, :data
 
     def initialize(report, data)
@@ -106,6 +127,7 @@ module AccountAuthorizationDetails
 
   class Role
 
+    include HasPolicyDocuments
     attr_reader :report, :data
 
     def initialize(report, data)
