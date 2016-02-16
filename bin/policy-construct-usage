@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+
+# Usage: policy-construct-usage path/to/account-id/X
+
+# Process all IAM/S3/SNS/SQS/Lambda policies; report on usages of "Condition",
+# or context variables inside "Resource" / "NotResource".
+
+account_dir = ARGV.shift
+
+require 'json'
+require_relative "../lib/aws_policy_simulator"
+require_relative "../lib/account_authorization_details"
+
+def process_policy(doc)
+  st = doc["Statement"]
+  st = [st] unless st.kind_of? Array
+  # puts st.count
+
+  st.each do |s|
+    r = s["Resource"] || s["NotResource"]
+    r = [r] unless r.kind_of? Array
+    r.each do |res|
+      res.scan(/\${(.*?)}/) do |v|
+        puts JSON.generate(type: "variable_in_resource", resource: res, variable: v)
+      end
+    end
+
+    if s["Condition"]
+      c = s["Condition"]
+      # p c.keys.sort
+
+      c.each do |operator, operands|
+        operands.each do |var, value|
+          puts JSON.generate(type: "condition", variable: var, operator: operator, value: value)
+        end
+      end
+    end
+  end
+end
+
+def process_iam_policies(account_dir)
+  iam_data_file = "#{account_dir}/service/iam/account-authorization-details.json"
+  report = AccountAuthorizationDetails::Report.new(iam_data_file)
+
+  inline_policies = [ :users, :groups, :roles ].map {|sym| report.send(sym)} \
+    .flatten \
+    .map(&:inline_policies).flatten
+  managed_policies = report.policies
+
+  (inline_policies + managed_policies).each do |policy|
+    # p policy.policy_name
+    doc = policy.policy_document
+    process_policy doc
+  end
+end
+
+def process_s3_policies(account_dir)
+  Dir.glob("#{account_dir}/service/s3/location/*/bucket/*/policy.json").each do |file|
+    process_policy(JSON.parse(IO.read file)["Policy"])
+  end
+end
+
+def process_sns_policies(account_dir)
+  Dir.glob("#{account_dir}/service/sns/region/*/topic/*/attributes.json").each do |file|
+    attrs = JSON.parse(IO.read file)
+    process_policy(attrs["Policy"])
+  end
+end
+
+def process_sqs_policies(account_dir)
+  Dir.glob("#{account_dir}/service/sqs/region/*/queue/*/attributes.json").each do |file|
+    attrs = JSON.parse(IO.read file)
+    process_policy(attrs["Policy"]) if attrs.has_key? "Policy"
+  end
+end
+
+def process_lambda_policies(account_dir)
+  Dir.glob("#{account_dir}/service/lambda/region/*/function/*/policy.json").each do |file|
+    doc = JSON.parse(IO.read file)
+    process_policy(doc["Policy"])
+  end
+end
+
+process_iam_policies account_dir
+process_s3_policies account_dir
+process_sns_policies account_dir
+process_sqs_policies account_dir
+process_lambda_policies account_dir
+
+# eof policy-construct-usage
