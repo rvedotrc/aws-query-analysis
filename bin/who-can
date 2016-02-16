@@ -15,13 +15,14 @@ require 'json'
 
 iam_data_file, @action, @resource = ARGV
 
-data = JSON.parse(IO.read iam_data_file)
-
 # We seek to emulate the AWS policy engine, where:
 # - the Principal is each user & role in the above data
 # - the Action and Resource are as specified in on the command line
 
 require_relative "../lib/aws_policy_simulator"
+require_relative "../lib/account_authorization_details"
+
+report = AccountAuthorizationDetails::Report.new(iam_data_file)
 
 def run_documents(documents, principal)
 
@@ -32,54 +33,48 @@ def run_documents(documents, principal)
 
 end
 
-def policy_documents_for_thing(data, thing, thing_type)
+def policy_documents_for_thing(thing)
   # Inline
-  documents = thing["#{thing_type}PolicyList"].map {|p| p["PolicyDocument"] }
+  documents = thing.inline_policies.map(&:policy_document)
 
   # Managed
-  thing["AttachedManagedPolicies"].each do |att|
-    policy = data["Policies"].find {|p| p["Arn"] == att["PolicyArn"]}
-    policy or raise "Couldn't find policy #{att.inspect}"
-    documents << policy["PolicyVersionList"].find {|pv| pv["IsDefaultVersion"]}["Document"]
-  end
+  documents.concat thing.managed_policies.map(&:policy_document)
 
   # Group memberships (should only apply to users)
-  if thing["GroupList"]
-    thing["GroupList"].each do |group_name|
-      group = data["GroupDetailList"].find {|g| g["GroupName"] == group_name}
-      group or raise "Couldn't find group #{group_name.inspect}"
-      documents.concat policy_documents_for_thing(data, group, "Group")
-    end
+  if thing.respond_to? :groups
+    documents.concat thing.groups.map {|g| policy_documents_for_thing(g)}.flatten
   end
 
   documents
 end
 
-no_humans = true
-
-user_names = []
-data["UserDetailList"].each do |u|
-  next if no_humans and u["UserName"].start_with? "modav."
-
-  documents = policy_documents_for_thing(data, u, "User")
-  ans = run_documents(documents, { "AWS" => u["Arn"] })
-  if ans.allowed?
-    user_names << u["UserName"]
-  end
+users = report.users.select do |u|
+  documents = u.all_policy_documents
+  ans = run_documents(documents, { "AWS" => u.data["Arn"] })
+  ans.allowed?
 end
 
-role_names = []
-data["RoleDetailList"].each do |r|
-  next if no_humans and r["Path"].start_with? "/x509/"
-
-  documents = policy_documents_for_thing(data, r, "Role")
-  ans = run_documents(documents, { "AWS" => r["Arn"] })
-  if ans.allowed?
-    role_names << r["RoleName"]
-  end
+roles = report.roles.select do |r|
+  documents = r.all_policy_documents
+  ans = run_documents(documents, { "AWS" => r.data["Arn"] })
+  ans.allowed?
 end
 
-puts JSON.pretty_generate({
-  Users: user_names,
-  Roles: role_names,
-})
+users = users.map {|u| { "Path" => u.data["Path"], "UserName" => u.data["UserName"] }}
+roles = roles.map {|r| { "Path" => r.data["Path"], "RoleName" => r.data["RoleName"] }}
+
+def print_compact_list(list, separator, before_first, after_last)
+  return if list.empty?
+  print before_first
+  print list.map {|d| JSON.generate(d)}.join separator
+  print after_last
+end
+
+# Not quite pretty-printed.  One user/role one each line.
+print "{\n  \"Users\": ["
+print_compact_list(users, ",\n    ", "\n    ", "\n  ")
+print "],\n  \"Roles\": ["
+print_compact_list(roles, ",\n    ", "\n    ", "\n  ")
+print "]\n}\n"
+
+# eof who-can
