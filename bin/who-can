@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-# Usage: who-can path/to/account-authorization-details.json ACTION RESOURCE
+# Usage: who-can path/to/account-dir ACTION RESOURCE
 # Where ACTION is e.g. "s3:DeleteObject" or "iam:CreateUser", ...
 # and RESOURCE is e.g. arn:aws:s3:::my-bucket/file.txt (etc)
 
@@ -13,16 +13,13 @@
 
 require 'json'
 
-iam_data_file, @action, @resource = ARGV
-
-# We seek to emulate the AWS policy engine, where:
-# - the Principal is each user & role in the above data
-# - the Action and Resource are as specified in on the command line
-
 require_relative "../lib/aws_policy_simulator"
 require_relative "../lib/account_authorization_details"
 
-report = AccountAuthorizationDetails::Report.new(iam_data_file)
+# FIXME if we're trying to access a resource which has its own policy
+# (currently: s3, sns, sqs, lambda), then that policy should be checked too.
+# Also for an IAM role, the AssumeRolePolicyDocument.
+# But what's the logical relationship between the two sets of policies?
 
 def run_documents(documents, principal)
 
@@ -48,6 +45,22 @@ def policy_documents_for_thing(thing)
   documents
 end
 
+def print_compact_list(list, separator, before_first, after_last)
+  return if list.empty?
+  print before_first
+  print list.map {|d| JSON.generate(d)}.join separator
+  print after_last
+end
+
+account_dir, @action, @resource = ARGV
+
+# We seek to emulate the AWS policy engine, where:
+# - the Principal is each user & role in the above data
+# - the Action and Resource are as specified in on the command line
+
+iam_data_file = "#{account_dir}/service/iam/account-authorization-details.json"
+report = AccountAuthorizationDetails::Report.new(iam_data_file)
+
 users = report.users.select do |u|
   documents = u.all_policy_documents
   ans = run_documents(documents, { "AWS" => u.data["Arn"] })
@@ -62,13 +75,6 @@ end
 
 users = users.map {|u| { "Path" => u.data["Path"], "UserName" => u.data["UserName"] }}
 roles = roles.map {|r| { "Path" => r.data["Path"], "RoleName" => r.data["RoleName"] }}
-
-def print_compact_list(list, separator, before_first, after_last)
-  return if list.empty?
-  print before_first
-  print list.map {|d| JSON.generate(d)}.join separator
-  print after_last
-end
 
 # Not quite pretty-printed.  One user/role one each line.
 print "{\n  \"Users\": ["

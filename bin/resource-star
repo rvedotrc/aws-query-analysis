@@ -1,12 +1,8 @@
 #!/usr/bin/env ruby
 
-# Usage: resource-star path/to/account-authorization-details.json
+# Usage: resource-star path/to/account-dir
 
 require 'json'
-
-iam_data_file = ARGV.shift
-
-data = JSON.parse(IO.read iam_data_file)
 
 def all_policy_documents(data)
   %w[ User Group Role ].each do |thing_type|
@@ -28,6 +24,11 @@ def all_policy_documents(data)
     yield doc, type: :policy, name: policy["PolicyName"], policy: policy
   end
 end
+
+account_dir = ARGV.shift
+
+iam_data_file = "#{account_dir}/service/iam/account-authorization-details.json"
+data = JSON.parse(IO.read iam_data_file)
 
 all_policy_documents(data) do |document, context|
   s = document["Statement"]

@@ -1,12 +1,8 @@
 #!/usr/bin/env ruby
 
-# Usage: effective-policy path/to/account-authorization-details.json [type] user-or-group-or-role
+# Usage: effective-iam-policy account-dir [type] user-or-group-or-role
 
 require 'json'
-
-iam_data_file = ARGV.shift
-
-data = JSON.parse(IO.read iam_data_file)
 
 require_relative "../lib/aws_policy_simulator"
 
@@ -42,6 +38,11 @@ def show_docs(docs)
     end
   end
 end
+
+account_dir = ARGV.shift
+iam_data_file = "#{account_dir}/service/iam/account-authorization-details.json"
+
+data = JSON.parse(IO.read iam_data_file)
 
 if ARGV.count == 2
   thing_type = ARGV.first.upcase[0] + ARGV.first.downcase[1..-1]
