@@ -1,0 +1,227 @@
+#!/usr/bin/env ruby
+
+# Usage: see --help
+
+# Renders EC2 SecurityGroups and AutoScaling LaunchConfigurations (and the
+# relationship to to their CloudFormation stacks) in graphviz form.
+
+require 'json'
+require 'ruby-graphviz'
+require 'optparse'
+
+class AwsSgToDot
+
+  class Configuration
+    attr_accessor :aq_dir
+    attr_accessor :cf_dir
+    attr_accessor :region
+    attr_accessor :stack_regexp
+    attr_accessor :ignored_sg_ids
+    attr_accessor :include_stack_parameters
+
+    def initialize
+      @ignored_sg_ids = []
+    end
+  end
+
+  attr_reader :config
+
+  def initialize
+    config = Configuration.new
+    yield config
+    # TODO validate that the config is complete
+    @config = config # Ideally, .dup
+  end
+
+  def stack_names_of_region
+    dir = "#{config.cf_dir}/service/cloudformation/region/#{config.region}/stack"
+    Dir.entries(dir).reject {|n| n.start_with? "."}.sort
+  end
+
+  def render_stack(stack_name)
+    dir = "#{config.cf_dir}/service/cloudformation/region/#{config.region}/stack/#{stack_name}"
+    t = JSON.parse(IO.read "#{dir}/template.json")
+    d = JSON.parse(IO.read "#{dir}/description.json")
+    r = JSON.parse(IO.read "#{dir}/resources.json")
+
+    stack_node = @g.add_nodes(stack_name)
+    stack_node.label = "stack\n#{stack_name}"
+
+    if config.include_stack_parameters
+      d["Stacks"][0]["Parameters"].each do |param|
+        k, v = param["ParameterKey"], param["ParameterValue"]
+        if v.match /sg-/
+          param_node = @g.add_nodes("#{stack_name}.#{k}")
+          param_node.label = "stack parameter\n#{k}\n#{v.inspect}"
+          e = @g.add_unique_edge(stack_node, param_node)
+          # e.label = "has parameter"
+
+          sg_node = render_sg(v)
+          e = @g.add_unique_edge(param_node, sg_node)
+          # e.label = "which refers to"
+        end
+      end
+    end
+
+    r["StackResourceSummaries"].each do |res|
+      k = res["LogicalResourceId"]
+      t = res["ResourceType"]
+      s = res["ResourceStatus"]
+      ph = res["PhysicalResourceId"]
+
+      if t.match /AWS::AutoScaling::LaunchConfiguration|AWS::EC2::SecurityGroup/
+        res_node = @g.add_nodes("#{stack_name}.#{k}")
+        res_node.label = "stack resource\n#{k}"
+        res_node.color = "red" if s == "DELETE_COMPLETE"
+        e = @g.add_unique_edge(stack_node, res_node)
+        # e.label = "has resource"
+
+        case t
+        when "AWS::EC2::SecurityGroup"
+          sg_node = render_sg(ph)
+          e = @g.add_unique_edge(res_node, sg_node)
+          # e.label = "instantiated as"
+          what_references_this_sg(ph, sg_node)
+        when "AWS::AutoScaling::LaunchConfiguration"
+          lc_node = render_launch_configuration(ph)
+          e = @g.add_unique_edge(res_node, lc_node)
+          # e.label = "instantiated as"
+        end
+      end
+    end
+  end
+
+  def all_sgs
+    @all_sgs ||= JSON.parse(IO.read "#{config.aq_dir}/service/ec2/region/#{config.region}/describe-security-groups.json")
+  end
+
+  def all_lcs
+    @all_lcs ||= JSON.parse(IO.read "#{config.aq_dir}/service/autoscaling/region/#{config.region}/describe-launch-configurations.json")
+  end
+
+  def render_sg(sg_id)
+    sg_node = @g.add_nodes(sg_id)
+
+    sg_def = all_sgs["SecurityGroups"].find {|sg| sg["GroupId"] == sg_id}
+    unless sg_def
+      sg_node.label = "SecurityGroup\n#{sg_id}"
+      sg_node.color = "red"
+      return sg_node
+    end
+
+    sg_node.label = "SecurityGroup\n#{sg_id}\n#{sg_def["GroupName"].inspect.gsub(/-/, "\n")}"
+
+  #   @scanned_sgs ||= {}
+  #   unless @scanned_sgs[sg_id]
+  #     puts "Scan #{sg_id}"
+  #     @scanned_sgs[sg_id] = true
+  #     what_references_this_sg(sg_id, sg_node)
+  #   end
+
+    sg_node
+  end
+
+  def render_launch_configuration(lc_name)
+    lc_node = @g.add_nodes(lc_name)
+    lc_node.shape = "rect"
+    lc_node.label = "LaunchConfiguration\n#{lc_name.gsub(/-/, "\n")}"
+
+    lc_def = all_lcs["LaunchConfigurations"].find {|lc| lc["LaunchConfigurationName"] == lc_name}
+    unless lc_def
+      lc_node.color = "red"
+      return lc_node
+    end
+
+    lc_def or raise "Can't find LC #{lc_name.inspect}"
+    lc_def["SecurityGroups"].each do |sg_id|
+      next if config.ignored_sg_ids.include? sg_id
+      e = @g.add_unique_edge(lc_node, render_sg(sg_id))
+      # e.label = "is a member of"
+    end
+
+    lc_node
+  end
+
+  def what_references_this_sg(sg_id, sg_node)
+    sg_node.style = "dotted"
+
+    all_lcs["LaunchConfigurations"].each do |lc|
+      sg_ids = lc["SecurityGroups"]
+      if sg_ids.include? sg_id
+        lc_node = render_launch_configuration lc["LaunchConfigurationName"]
+        e = @g.add_unique_edge(lc_node, sg_node)
+        # e.label = "is a member of"
+      end
+    end
+
+    sg_def = all_sgs["SecurityGroups"].find {|sg| sg["GroupId"] == sg_id}
+    if sg_def
+      [
+        [ "IpPermissions", "from" ],
+        [ "IpPermissionsEgress", "to" ],
+      ].each do |rules_key, direction|
+        sg_def[rules_key].each do |rule|
+          if rule["UserIdGroupPairs"]
+            rule["UserIdGroupPairs"].each do |pair|
+
+              # FIXME not sure how Owner is different from "this account" (hand-waving)
+              if pair["UserId"] == sg_def["OwnerId"]
+                other_sg_id = pair["GroupId"]
+                other_sg_node = render_sg(other_sg_id)
+                e = @g.add_unique_edge(sg_node, other_sg_node)
+                # e.label = "allow #{direction}"
+              end
+
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def make_graph
+    @g = GraphViz::new("G")
+
+    class << @g
+      def add_unique_edge(from, to, *args)
+        k = [ from.id, to.id ]
+        @done_edges ||= {}
+        unless @done_edges.has_key? k
+          @done_edges[k] = add_edge(from, to, *args)
+        else
+          @done_edges[k]
+        end
+      end
+    end
+
+    stack_names_of_region.each do |stack_name|
+      if stack_name.match config.stack_regexp
+        render_stack stack_name
+      end
+    end
+
+    @g
+  end
+
+end
+
+begin
+  output_dot = nil
+
+  renderer = AwsSgToDot.new do |conf|
+    parser = OptionParser.new do |opts|
+      opts.on('-p', '--parameters', 'Include CloudFormation stack parameter nodes') {conf.include_stack_parameters = true}
+      opts.on('--aws-query-dir=DIR', 'Path to "aws-query" repository') {|v| conf.aq_dir = v}
+      opts.on('--cloudformation-mirror-dir=DIR', 'Path to "cloudformation-mirror" repository') {|v| conf.cf_dir = v}
+      opts.on('--region=R', 'AWS region') {|v| conf.region = v}
+      opts.on('--stacks=REGEX', 'Select stacks to process') {|v| conf.stack_regexp = v}
+      opts.on('--ignore-security-group=SGID', 'Ignore a security group (may be repeated)') {|v| conf.ignored_sg_ids << v}
+      opts.on('--output=FILE', 'Output filename (.dot)') {|v| output_dot = v}
+    end
+    parser.parse!
+  end
+
+  g = renderer.make_graph
+  g.output(:dot => output_dot)
+  g.output(:png => output_dot.sub(/\.dot$/, ".png"))
+end

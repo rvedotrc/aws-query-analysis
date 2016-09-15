@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+# Usage: expand-security-groups aws-query/account-id/*
+
+# For each account + region, for each security group, for each ingress +
+# egress rule, show a single line of JSON.  The aim is to make it easy to grep
+# the output for a security group ID or name to see the links between SGs.
+
+require 'json'
+
+def regions_for_account(account_dir)
+  Dir.entries("#{account_dir}/service/ec2/region").reject {|n| n.start_with? "."}.sort
+end
+
+def do_security_groups(account_dir, region, account_id)
+  file = "#{account_dir}/service/ec2/region/#{region}/describe-security-groups.json"
+  data = JSON.parse(IO.read file)
+
+  sgs_by_id = data["SecurityGroups"].each_with_object({}) {|sg, h| h[ sg["GroupId"] ] = sg}
+
+  data["SecurityGroups"].each do |sg|
+    # ["Description", "GroupId", "GroupName", "IpPermissions", "IpPermissionsEgress", "OwnerId", "Tags", "VpcId"]  - VpcId optional
+
+    [
+      [ "IpPermissions", "ingress" ],
+      [ "IpPermissionsEgress", "egress" ],
+    ].each do |rules_key, label|
+      sg[rules_key].each do |rule|
+        # ["FromPort", "IpProtocol", "IpRanges", "PrefixListIds", "ToPort", "UserIdGroupPairs"] - ports optional
+
+        pairs = rule["UserIdGroupPairs"]
+        if pairs
+          pairs.each do |pair|
+            if pair["UserId"] == account_id and pair["GroupId"]
+              other = sgs_by_id[ pair["GroupId" ] ]
+              if other
+                pair["GroupName"] = other["GroupName"]
+              end
+            end
+          end
+        end
+
+        puts JSON.generate(sg: { id: sg["GroupId"], name: sg["GroupName"], account_id: account_id, region: region  }, rule_type: label, rule: rule )
+      end
+    end
+  end
+end
+
+ARGV.each do |account_dir|
+  account_id = File.basename account_dir
+
+  regions_for_account(account_dir).each do |region|
+    do_security_groups(account_dir, region, account_id)
+  end
+end
+
+# eof expand-security-groups
